@@ -28,6 +28,9 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        with:
+          # Auto-enable Pages on first run (GITHUB_TOKEN has pages:write below).
+          enablement: true
 
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1
