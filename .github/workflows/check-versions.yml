@@ -1,0 +1,172 @@
+name: Check Elastic Stack and ECK Releases
+
+on:
+  schedule:
+    # 06:00 UTC daily
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip PR creation)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    name: Check for new releases
+    runs-on: ubuntu-latest
+    outputs:
+      new_elastic_version: ${{ steps.elastic.outputs.new_version }}
+      current_elastic_version: ${{ steps.elastic.outputs.current_version }}
+      new_eck_version: ${{ steps.eck.outputs.new_version }}
+      current_eck_version: ${{ steps.eck.outputs.current_version }}
+      has_updates: ${{ steps.summary.outputs.has_updates }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check latest Elastic Stack version
+        id: elastic
+        run: |
+          CURRENT=$(grep -oP '^ELASTIC_VERSION=\K[0-9]+\.[0-9]+\.[0-9]+' .env.example || true)
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Current Elastic Stack: $CURRENT"
+
+          # Docker Hub (elastic/elasticsearch): stable X.Y.Z only
+          LATEST=$(curl -sSf "https://registry.hub.docker.com/v2/namespaces/elastic/repositories/elasticsearch/tags?page_size=100&ordering=last_updated" \
+            | jq -r '.results[].name' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1)
+
+          # Fallback: Elastic artifacts API
+          if [[ -z "$LATEST" || "$LATEST" == "null" ]]; then
+            LATEST=$(curl -sSf "https://artifacts-api.elastic.co/v1/versions" \
+              | jq -r '.versions[]' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V | tail -1)
+          fi
+
+          echo "Latest Elastic Stack: $LATEST"
+          if [[ -z "$LATEST" || "$LATEST" == "null" ]]; then
+            echo "new_version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$LATEST" != "$CURRENT" ]]; then
+            echo "new_version=$LATEST" >> "$GITHUB_OUTPUT"
+          else
+            echo "new_version=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check latest ECK version
+        id: eck
+        run: |
+          # ECK version is tracked in the README badge: "ECK-<version>-..."
+          # If not badged, read from assets/eck/VERSION when it exists (dev
+          # checkouts); for CI we only care about the README reference.
+          CURRENT=$(grep -oP 'ECK-\K[0-9]+\.[0-9]+\.[0-9]+' README.md | head -1 || true)
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Current ECK (README reference): ${CURRENT:-unset}"
+
+          LATEST=$(curl -sSf https://api.github.com/repos/elastic/cloud-on-k8s/releases/latest \
+            | jq -r '.tag_name' | sed 's/^v//')
+
+          echo "Latest ECK release: $LATEST"
+          if [[ -z "$LATEST" || "$LATEST" == "null" ]]; then
+            echo "new_version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$LATEST" != "$CURRENT" ]]; then
+            echo "new_version=$LATEST" >> "$GITHUB_OUTPUT"
+          else
+            echo "new_version=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summarise
+        id: summary
+        run: |
+          HAS_UPDATES=false
+          [[ -n "${{ steps.elastic.outputs.new_version }}" ]] && HAS_UPDATES=true
+          [[ -n "${{ steps.eck.outputs.new_version }}"     ]] && HAS_UPDATES=true
+          echo "has_updates=$HAS_UPDATES" >> "$GITHUB_OUTPUT"
+          echo "Has updates: $HAS_UPDATES"
+
+  update-and-pr:
+    name: Update versions and open PR
+    needs: check
+    if: needs.check.outputs.has_updates == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update Elastic Stack version in .env.example and README
+        if: needs.check.outputs.new_elastic_version != ''
+        env:
+          OLD_VERSION: ${{ needs.check.outputs.current_elastic_version }}
+          NEW_VERSION: ${{ needs.check.outputs.new_elastic_version }}
+        run: |
+          echo "Elastic Stack: $OLD_VERSION -> $NEW_VERSION"
+          sed -i "s/^ELASTIC_VERSION=${OLD_VERSION}/ELASTIC_VERSION=${NEW_VERSION}/" .env.example
+          # README badge:  Elastic-<version>-005571
+          sed -i "s/Elastic-${OLD_VERSION}-005571/Elastic-${NEW_VERSION}-005571/g" README.md
+          git diff --stat
+
+      - name: Update ECK version in README
+        if: needs.check.outputs.new_eck_version != ''
+        env:
+          OLD_VERSION: ${{ needs.check.outputs.current_eck_version }}
+          NEW_VERSION: ${{ needs.check.outputs.new_eck_version }}
+        run: |
+          echo "ECK: ${OLD_VERSION:-unset} -> $NEW_VERSION"
+          if [[ -n "$OLD_VERSION" ]]; then
+            sed -i "s/ECK-${OLD_VERSION}-005571/ECK-${NEW_VERSION}-005571/g" README.md
+          fi
+          git diff --stat
+
+      - name: Create pull request
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_ELASTIC: ${{ needs.check.outputs.new_elastic_version }}
+          OLD_ELASTIC: ${{ needs.check.outputs.current_elastic_version }}
+          NEW_ECK: ${{ needs.check.outputs.new_eck_version }}
+          OLD_ECK: ${{ needs.check.outputs.current_eck_version }}
+        run: |
+          BRANCH="chore/version-update"
+          TITLE_PARTS=()
+          BODY_PARTS=("## Version updates" "")
+
+          if [[ -n "$NEW_ELASTIC" ]]; then
+            TITLE_PARTS+=("Elastic Stack ${NEW_ELASTIC}")
+            BODY_PARTS+=("- Elastic Stack: \`${OLD_ELASTIC}\` -> \`${NEW_ELASTIC}\`")
+          fi
+          if [[ -n "$NEW_ECK" ]]; then
+            TITLE_PARTS+=("ECK ${NEW_ECK}")
+            BODY_PARTS+=("- ECK: \`${OLD_ECK:-unset}\` -> \`${NEW_ECK}\`")
+          fi
+
+          TITLE="chore: update $(IFS=', '; echo "${TITLE_PARTS[*]}")"
+          BODY=$(printf '%s\n' "${BODY_PARTS[@]}")
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -B "$BRANCH"
+          git add -A
+          git commit -m "$TITLE" || { echo "No changes to commit"; exit 0; }
+          git push -u origin "$BRANCH" --force
+
+          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [[ -n "$EXISTING" ]]; then
+            echo "Existing PR #${EXISTING} updated"
+          else
+            gh pr create --title "$TITLE" --body "$BODY"
+          fi

@@ -1,0 +1,61 @@
+# Network Policy — enforces air-gap by blocking all external egress from the
+# Elastic namespace while allowing all required intra-cluster traffic.
+#
+# What is allowed:
+#   Ingress  — anything from anywhere (stack must remain reachable from the cluster)
+#   Egress   — intra-namespace pod-to-pod traffic
+#   Egress   — DNS (UDP+TCP 53) to kube-system
+#   Egress   — ECK operator namespace (operator health checks, webhook calls)
+#   Egress   — host.docker.internal:LM_STUDIO_PORT (LM Studio running on the Mac host)
+#
+# What is blocked:
+#   Egress   — all traffic that doesn't match the above (including internet)
+#
+# Requires the CNI plugin to support NetworkPolicy (e.g. Calico, Cilium).
+# Docker Desktop ships with a basic NetworkPolicy-capable CNI.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: elastic-airgap
+  namespace: ${ELASTIC_NS}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Allow all inbound traffic — restrict further if needed
+    - {}
+
+  egress:
+    # Intra-namespace: pods can talk to each other freely
+    - to:
+        - podSelector: {}
+
+    # DNS resolution via kube-system
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+    # ECK operator namespace — operator needs to reach managed pods
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ${ECK_NAMESPACE}
+
+    # LM Studio on the host machine (host.docker.internal resolves to the node IP
+    # in Docker Desktop; ipBlock covers the 192.168.65.0/24 range it uses)
+    - to:
+        - ipBlock:
+            cidr: 192.168.65.0/24
+      ports:
+        - port: ${LM_STUDIO_PORT}
+          protocol: TCP

@@ -1,0 +1,30 @@
+# Elastic Maps Server — serves map tiles and vector data locally.
+# Required for air-gapped deployments so Kibana Maps does not reach out to
+# maps.elastic.co for basemap tiles and geospatial data.
+#
+# Requires a Platinum or Enterprise licence.
+# ECK creates a Service named  <name>-ems-http  in the same namespace.
+# Note: the -ubi8 image suffix was dropped in Elastic 9.x.
+# Kibana is pre-configured to use this service via map.emsUrl below.
+---
+apiVersion: maps.k8s.elastic.co/v1alpha1
+kind: ElasticMapsServer
+metadata:
+  name: elastic-maps-server
+  namespace: ${ELASTIC_NS}
+spec:
+  version: ${ELASTIC_VERSION}
+  count: 1
+  elasticsearchRef:
+    name: ${CLUSTER_NAME}
+  podTemplate:
+    spec:
+      containers:
+        - name: maps
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              memory: ${MAPS_MEM}
+              cpu: 200m
+            limits:
+              memory: ${MAPS_MEM}

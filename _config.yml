@@ -1,0 +1,52 @@
+title: Elastic Airgapped - Deploy the Elastic Stack Offline on Docker Desktop Kubernetes
+description: >-
+  A fully air-gapped Elastic Stack lab for Docker Desktop Kubernetes.
+  Deploy Elasticsearch, Kibana, Fleet, Logstash, and Maps with zero internet
+  at run time. Uses Elastic Cloud on Kubernetes (ECK) with a local package
+  registry, cached GeoIP databases, and pre-downloaded ML models so the
+  full stack runs offline after a single online asset pull.
+url: https://jamesagarside.github.io
+baseurl: /elastic-airgapped
+author:
+  name: James Garside
+  url: https://github.com/jamesagarside
+
+# SEO & social
+lang: en-GB
+twitter:
+  card: summary_large_image
+social:
+  name: James Garside
+  links:
+    - https://github.com/jamesagarside/elastic-airgapped
+
+# Keywords: surfaced by jekyll-seo-tag in <meta> and JSON-LD
+keywords: >-
+  air-gapped Elasticsearch, offline Elastic Stack, Elastic Cloud on Kubernetes,
+  ECK Docker Desktop, offline Kibana, Elastic Fleet air-gapped,
+  Elastic Package Registry offline, ELSER offline, GeoIP air-gapped,
+  Elastic lab Kubernetes, Elasticsearch offline install, Kibana offline,
+  Fleet Server Kubernetes, local Elastic stack, self-hosted Elasticsearch,
+  Elastic AI Assistant local LLM, LM Studio Kibana
+
+remote_theme: pages-themes/minimal@v0.2.0
+
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+exclude:
+  - Makefile
+  - manifests
+  - assets
+  - scripts
+  - .env.example
+  - .github
+  - Gemfile
+  - Gemfile.lock
+  - openspec
+  - CLAUDE.md
+  - .claude
+  - .claude-flow
+  - .mcp.json

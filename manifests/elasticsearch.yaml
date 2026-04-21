@@ -1,0 +1,61 @@
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${ELASTIC_NS}
+spec:
+  version: ${ELASTIC_VERSION}
+  nodeSets:
+    - name: default
+      count: ${ES_DEFAULT_COUNT}
+      config:
+        node.roles: ["master", "data", "ingest"]
+        xpack.ml.enabled: "false"
+        # Air-gap: disable the GeoIP auto-downloader.
+        # Databases can be supplied manually via assets/geoip/ if needed.
+        ingest.geoip.downloader.enabled: false
+      podTemplate:
+        spec:
+          containers:
+            - name: elasticsearch
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  memory: ${ES_DEFAULT_MEM}
+                  cpu: 500m
+                limits:
+                  memory: ${ES_DEFAULT_MEM}
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 10Gi
+    - name: ml
+      count: ${ES_ML_COUNT}
+      config:
+        node.roles: ["ml", "remote_cluster_client"]
+        xpack.ml.enabled: "true"
+        # Air-gap: disable the GeoIP auto-downloader on ML nodes too.
+        ingest.geoip.downloader.enabled: false
+      podTemplate:
+        spec:
+          containers:
+            - name: elasticsearch
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  memory: ${ES_ML_MEM}
+                  cpu: 1000m
+                limits:
+                  memory: ${ES_ML_MEM}
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 10Gi

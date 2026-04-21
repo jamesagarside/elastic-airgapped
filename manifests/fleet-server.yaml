@@ -1,0 +1,62 @@
+apiVersion: agent.k8s.elastic.co/v1alpha1
+kind: Agent
+metadata:
+  name: fleet-server
+  namespace: ${ELASTIC_NS}
+spec:
+  version: ${ELASTIC_VERSION}
+  kibanaRef:
+    name: kibana
+  elasticsearchRefs:
+    - name: ${CLUSTER_NAME}
+  mode: fleet
+  fleetServerEnabled: true
+  policyID: fleet-server-policy
+  deployment:
+    replicas: 1
+    podTemplate:
+      spec:
+        serviceAccountName: fleet-server
+        automountServiceAccountToken: true
+        securityContext:
+          runAsUser: 0
+        containers:
+          - name: agent
+            imagePullPolicy: IfNotPresent
+            resources:
+              requests:
+                memory: ${FLEET_MEM}
+                cpu: 200m
+              limits:
+                memory: ${FLEET_MEM}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fleet-server
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces, nodes]
+    verbs: [get, watch, list]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fleet-server
+  namespace: ${ELASTIC_NS}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fleet-server
+subjects:
+  - kind: ServiceAccount
+    name: fleet-server
+    namespace: ${ELASTIC_NS}
+roleRef:
+  kind: ClusterRole
+  name: fleet-server
+  apiGroup: rbac.authorization.k8s.io

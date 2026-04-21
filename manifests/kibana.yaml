@@ -1,0 +1,67 @@
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: kibana
+  namespace: ${ELASTIC_NS}
+spec:
+  version: ${ELASTIC_VERSION}
+  count: 1
+  elasticsearchRef:
+    name: ${CLUSTER_NAME}
+  config:
+    # ── Air-gap: route all external Elastic services to local deployments ─────
+    # Disable Kibana telemetry / usage reporting (required for true air-gap)
+    telemetry.optIn: false
+    telemetry.allowChangingOptInStatus: false
+    # Point Fleet at the in-cluster Elastic Package Registry so integrations
+    # can be browsed and installed without reaching epr.elastic.co.
+    xpack.fleet.registryUrl: http://package-registry.${ELASTIC_NS}.svc:8080
+    # ── LLM / AI connector (preconfigured so it's available on first boot) ──
+    xpack.actions.preconfigured:
+      llm-connector:
+        name: ${LLM_CONNECTOR_NAME}
+        actionTypeId: .gen-ai
+        config:
+          apiProvider: ${LLM_CONNECTOR_TYPE}
+          apiUrl: ${LLM_CONNECTOR_URL}
+          defaultModel: ${LLM_CONNECTOR_MODEL}
+        secrets:
+          apiKey: ${LLM_CONNECTOR_API_KEY}
+    # ── Fleet ────────────────────────────────────────────────────────────────
+    # xpack.fleet.outputs is intentionally omitted — ECK auto-configures the
+    # default Elasticsearch output from the elasticsearchRef in each Agent spec.
+    xpack.fleet.packages:
+      - name: system
+        version: latest
+      - name: elastic_agent
+        version: latest
+      - name: fleet_server
+        version: latest
+    xpack.fleet.agentPolicies:
+      - name: Fleet Server Policy
+        id: fleet-server-policy
+        is_default_fleet_server: true
+        package_policies:
+          - name: fleet_server-1
+            id: default-fleet-server
+            package:
+              name: fleet_server
+      - name: Agent Policy
+        id: agent-policy
+        is_default: true
+        package_policies:
+          - name: system-1
+            id: default-system
+            package:
+              name: system
+  podTemplate:
+    spec:
+      containers:
+        - name: kibana
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              memory: ${KIBANA_MEM}
+              cpu: 250m
+            limits:
+              memory: ${KIBANA_MEM}

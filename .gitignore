@@ -1,0 +1,38 @@
+# Secrets and local config
+.env
+.env.local
+.env-e
+
+# Downloaded assets (images, charts, GeoIP, ML models) — regenerate with: make pull-all
+assets/
+
+# AI / LLM tooling (not part of this project)
+.claude/
+.claude-flow/
+.gemini/
+.mcp.json
+CLAUDE.md
+openspec/
+.openspec/
+
+# macOS / editor
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Local license files (users bring their own Enterprise license JSON)
+*.license.json
+license.json
+eck-license.json
+
+# Generated
+_site/
+.jekyll-cache/
+.jekyll-metadata
+Gemfile.lock
+
+# Local logs and temp
+*.log
+tmp/

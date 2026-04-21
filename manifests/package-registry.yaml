@@ -1,0 +1,71 @@
+# Elastic Package Registry (EPR) — serves Fleet integrations locally.
+# Kibana's xpack.fleet.registryUrl points at this Service so integrations
+# install in Fleet without reaching epr.elastic.co.
+#
+# Image tags:
+#   lite        — smaller bundle, common integrations
+#   production  — full integration catalogue (larger image)
+#
+# Override with EPR_IMAGE in .env if you want the full catalogue.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: package-registry
+  namespace: ${ELASTIC_NS}
+  labels:
+    app.kubernetes.io/name: package-registry
+    app.kubernetes.io/part-of: elastic-airgapped
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: package-registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: package-registry
+    spec:
+      containers:
+        - name: package-registry
+          image: ${EPR_IMAGE}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: ${EPR_MEM}
+              cpu: 100m
+            limits:
+              memory: ${EPR_MEM}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: package-registry
+  namespace: ${ELASTIC_NS}
+  labels:
+    app.kubernetes.io/name: package-registry
+    app.kubernetes.io/part-of: elastic-airgapped
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: package-registry
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

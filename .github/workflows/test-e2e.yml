@@ -1,0 +1,214 @@
+name: End-to-end Kubernetes deploy test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Makefile'
+      - '.env.example'
+      - 'manifests/**'
+      - '.github/workflows/test-e2e.yml'
+      - '.github/scripts/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Makefile'
+      - '.env.example'
+      - 'manifests/**'
+      - '.github/workflows/test-e2e.yml'
+      - '.github/scripts/**'
+  workflow_dispatch:
+    inputs:
+      elastic_version:
+        description: 'Elastic Stack version to test'
+        required: false
+        default: ''
+      debug:
+        description: 'Enable debug output'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Full stack deploy (kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gettext-base jq
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          version: v0.24.0
+          cluster_name: elastic-airgapped-e2e
+          wait: 120s
+          config: |
+            kind: Cluster
+            apiVersion: kind.x-k8s.io/v1alpha4
+            nodes:
+              - role: control-plane
+                extraPortMappings:
+                  - containerPort: 80
+                    hostPort: 80
+                    protocol: TCP
+                  - containerPort: 443
+                    hostPort: 443
+                    protocol: TCP
+
+      - name: Show node info
+        run: |
+          kubectl get nodes -o wide
+          kubectl version
+          free -h
+          df -h
+
+      - name: Create CI .env
+        env:
+          STACK_VERSION: ${{ github.event.inputs.elastic_version }}
+        run: |
+          # Use the version in .env.example unless the workflow dispatch overrides it.
+          DEFAULT_VER=$(grep -oP '^ELASTIC_VERSION=\K[0-9]+\.[0-9]+\.[0-9]+' .env.example)
+          VER="${STACK_VERSION:-$DEFAULT_VER}"
+          echo "Testing Elastic Stack $VER"
+
+          cat > .env <<EOF
+          # ── Stack
+          ELASTIC_VERSION=${VER}
+          CLUSTER_NAME=ci-cluster
+          ELASTIC_NS=elastic
+          ECK_NAMESPACE=elastic-system
+
+          # ── License
+          ECK_LICENSE_TIER=trial
+          ECK_LICENSE_FILE=
+
+          # ── Ingress
+          KIBANA_HOSTNAME=kibana.localhost
+          ES_HOSTNAME=elasticsearch.localhost
+
+          # ── LM Studio (dummy in CI)
+          LLM_CONNECTOR_BASE_URL=http://host.docker.internal
+          LM_STUDIO_PORT=1234
+          LLM_CONNECTOR_NAME=ci-placeholder
+          LLM_CONNECTOR_TYPE=OpenAI
+          LLM_CONNECTOR_MODEL=placeholder
+          LLM_CONNECTOR_API_KEY=ci-placeholder
+
+          # ── CI-scaled resource envelope (all components present,
+          #     reduced counts and memory to fit a 16 GB runner)
+          ES_DEFAULT_COUNT=1
+          ES_ML_COUNT=1
+          ES_DEFAULT_MEM=1536Mi
+          ES_ML_MEM=2Gi
+          KIBANA_MEM=1Gi
+          FLEET_MEM=512Mi
+          AGENT_MEM=512Mi
+          LOGSTASH_MEM=512Mi
+          MAPS_MEM=512Mi
+          EPR_MEM=256Mi
+          EOF
+          echo "--- .env ---"
+          grep -v KEY .env
+
+      - name: Validate .env and manifests
+        run: |
+          bash .github/scripts/validate-env.sh
+
+      - name: Pull online assets
+        run: |
+          make pull-assets
+
+      - name: Pull stack images
+        run: |
+          make pull-images
+
+      - name: Load images into kind
+        run: |
+          make load-images CLUSTER=elastic-airgapped-e2e
+
+      - name: Install ingress-nginx
+        run: |
+          make install-ingress
+
+      - name: Install ECK operator
+        run: |
+          make install-eck
+
+      - name: Apply license
+        run: |
+          make apply-license
+
+      - name: Deploy the stack
+        run: |
+          make deploy
+
+      - name: Wait for Elasticsearch green
+        run: |
+          kubectl wait elasticsearch/ci-cluster -n elastic \
+            --for=jsonpath='{.status.health}'=green \
+            --timeout=600s
+
+      - name: Wait for Kibana green
+        run: |
+          kubectl wait kibana/kibana -n elastic \
+            --for=jsonpath='{.status.health}'=green \
+            --timeout=600s || true
+          kubectl get kibana -n elastic -o yaml | head -80
+
+      - name: Smoke tests
+        env:
+          DEBUG: ${{ github.event.inputs.debug || 'false' }}
+        run: |
+          bash .github/scripts/test-stack.sh all
+
+      - name: Describe on failure
+        if: failure()
+        run: |
+          echo "=== operator ==="
+          kubectl -n elastic-system get all
+          kubectl -n elastic-system describe pod -l control-plane=elastic-operator | tail -50
+          kubectl -n elastic-system logs -l control-plane=elastic-operator --tail=200 || true
+          echo "=== stack ==="
+          kubectl -n elastic get all
+          kubectl -n elastic get elasticsearch,kibana,agent,logstash,elasticmapsserver -o yaml
+          for pod in $(kubectl -n elastic get pods -o name); do
+            echo "--- $pod ---"
+            kubectl -n elastic describe $pod | tail -40
+            kubectl -n elastic logs $pod --tail=100 || true
+          done
+          echo "=== events ==="
+          kubectl get events -A --sort-by=.lastTimestamp | tail -60
+
+      - name: Upload logs artefact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            /tmp/elastic-airgapped-logs/
+          retention-days: 7
+
+      - name: Tear down
+        if: always()
+        run: |
+          kubectl delete namespace elastic --ignore-not-found --grace-period=0 --force 2>/dev/null || true
+          kubectl delete namespace elastic-system --ignore-not-found --grace-period=0 --force 2>/dev/null || true

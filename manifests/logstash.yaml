@@ -1,0 +1,73 @@
+# Logstash — data transformation and pipeline processing.
+# Useful in air-gapped environments for enrichment, parsing, and routing
+# before data reaches Elasticsearch.
+#
+# Pre-wired with a basic Beats-in / Elasticsearch-out pipeline.
+# Edit the pipeline config string to add filters, enrichment, etc.
+---
+apiVersion: logstash.k8s.elastic.co/v1alpha1
+kind: Logstash
+metadata:
+  name: logstash
+  namespace: ${ELASTIC_NS}
+spec:
+  version: ${ELASTIC_VERSION}
+  count: 1
+  elasticsearchRefs:
+    - name: ${CLUSTER_NAME}
+      clusterName: ${CLUSTER_NAME}
+  config:
+    pipeline.workers: 2
+    log.level: info
+    # Disable phone-home telemetry (required for true air-gap)
+    xpack.monitoring.enabled: false
+  pipelines:
+    - pipeline.id: main
+      config.string: |
+        input {
+          beats {
+            port => 5044
+          }
+        }
+        filter {
+          # Add enrichment filters here
+        }
+        output {
+          elasticsearch {
+            hosts => ["${CLUSTER_NAME}-es-http:9200"]
+            ssl_certificate_authorities => ["/mnt/elastic-internal/elasticsearch-certs/ca.crt"]
+            ssl_enabled => true
+            user => "${ELASTICSEARCH_USERNAME}"
+            password => "${ELASTICSEARCH_PASSWORD}"
+            index => "%{[@metadata][beat]}-%{[@metadata][version]}-%{+YYYY.MM.dd}"
+          }
+        }
+  services:
+    - name: beats
+      service:
+        spec:
+          type: ClusterIP
+          ports:
+            - port: 5044
+              name: beats
+              protocol: TCP
+              targetPort: 5044
+  podTemplate:
+    spec:
+      containers:
+        - name: logstash
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              memory: ${LOGSTASH_MEM}
+              cpu: 250m
+            limits:
+              memory: ${LOGSTASH_MEM}
+          env:
+            - name: ELASTICSEARCH_USERNAME
+              value: elastic
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${CLUSTER_NAME}-es-elastic-user
+                  key: elastic
