@@ -111,6 +111,9 @@ jobs:
           KIBANA_HOSTNAME=kibana.localhost
           ES_HOSTNAME=elasticsearch.localhost
 
+          # ── Elastic Package Registry (air-gapped Fleet integrations)
+          EPR_IMAGE=docker.elastic.co/package-registry/distribution:lite
+
           # ── LM Studio (dummy in CI)
           LLM_CONNECTOR_BASE_URL=http://host.docker.internal
           LM_STUDIO_PORT=1234

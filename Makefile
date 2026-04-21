@@ -376,16 +376,19 @@ load-images: check-env ## Load Docker images into kind node (CLUSTER=<name> to o
 	ECK_VER=$$(cat assets/eck/VERSION 2>/dev/null || echo "$(ECK_VERSION)"); \
 	FAILED=""; \
 	for img in docker.elastic.co/eck/eck-operator:$$ECK_VER $(EPR_IMAGE) $(ELASTIC_IMAGES); do \
+	  [ -z "$$img" ] && continue; \
 	  echo "  --> $$img"; \
-	  kind load docker-image "$$img" --name "$$CLUSTER_NAME_RESOLVED" 2>&1 \
-	    | grep -v '^Image:' || FAILED="$$FAILED\n    ✗ $$img"; \
+	  out=$$(kind load docker-image "$$img" --name "$$CLUSTER_NAME_RESOLVED" 2>&1); rc=$$?; \
+	  echo "$$out" | grep -v '^Image:' || true; \
+	  [ $$rc -eq 0 ] || FAILED="$$FAILED\n    ✗ $$img"; \
 	done; \
 	if [ -f assets/ingress-nginx-images.txt ]; then \
 	  while IFS= read -r img; do \
 	    [ -z "$$img" ] && continue; \
 	    echo "  --> $$img"; \
-	    kind load docker-image "$$img" --name "$$CLUSTER_NAME_RESOLVED" 2>&1 \
-	      | grep -v '^Image:' || FAILED="$$FAILED\n    ✗ $$img"; \
+	    out=$$(kind load docker-image "$$img" --name "$$CLUSTER_NAME_RESOLVED" 2>&1); rc=$$?; \
+	    echo "$$out" | grep -v '^Image:' || true; \
+	    [ $$rc -eq 0 ] || FAILED="$$FAILED\n    ✗ $$img"; \
 	  done < assets/ingress-nginx-images.txt; \
 	fi; \
 	if [ -n "$$FAILED" ]; then \
