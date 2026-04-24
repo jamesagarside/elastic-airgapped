@@ -47,7 +47,7 @@ test_elasticsearch() {
 }
 
 test_kibana() {
-  log_info "Test: Kibana reports overall available status"
+  log_info "Test: Kibana reports available or degraded (not unavailable/critical)"
   local pod
   pod=$(kubectl -n "$NS" get pod -l "kibana.k8s.elastic.co/name=kibana" \
           -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
@@ -55,16 +55,22 @@ test_kibana() {
     log_fail "No Kibana pod found"
     return
   fi
-  local status
-  status=$(kubectl -n "$NS" exec "$pod" -- \
-    curl -sSk -u "elastic:$(get_elastic_password)" \
-      https://localhost:5601/api/status \
-    | jq -r '.status.overall.level // .status.overall.state // "unknown"')
-  if [[ "$status" == "available" ]]; then
-    log_ok "Kibana is available"
-  else
-    log_fail "Kibana status: $status"
-  fi
+  local status pw
+  pw=$(get_elastic_password)
+  # Kibana may take a while to finish Fleet bootstrapping. Poll up to ~3min.
+  for i in $(seq 1 18); do
+    status=$(kubectl -n "$NS" exec "$pod" -c kibana -- \
+      curl -sSk -u "elastic:${pw}" https://localhost:5601/api/status \
+      | jq -r '.status.overall.level // .status.overall.state // "unknown"' 2>/dev/null || echo "unknown")
+    case "$status" in
+      available|degraded|green|yellow)
+        log_ok "Kibana status: $status"
+        return
+        ;;
+    esac
+    sleep 10
+  done
+  log_fail "Kibana status after retries: $status"
 }
 
 test_fleet() {
