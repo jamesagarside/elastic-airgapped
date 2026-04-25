@@ -4,6 +4,7 @@ SHELL := /bin/bash
         show-config check-env diff-env add-hosts remove-hosts \
         apply-license check-license clean-license \
         pull-geoip pull-ml-models pull-epr save-images load-images-tarball verify-offline \
+        check-lms start-llm stop-llm check-llm \
         clean-elastic clean-eck clean-ingress clean-all
 
 # ── Tool paths ───────────────────────────────────────────────────────────────
@@ -21,6 +22,10 @@ export
 # LLM_CONNECTOR_URL is constructed from LM_STUDIO_PORT so there is one place to
 # change the port.  The := assignment overrides anything exported by .env.
 LLM_CONNECTOR_URL := $(LLM_CONNECTOR_BASE_URL):$(LM_STUDIO_PORT)/v1
+
+# Path to the LM Studio CLI: prefer one on PATH, fall back to the per-user
+# install location.  Resolved at parse time so recipes can call "$(LMS_BIN)".
+LMS_BIN := $(shell command -v lms 2>/dev/null || echo "$$HOME/.lmstudio/bin/lms")
 
 # ── Offline asset cache ───────────────────────────────────────────────────────
 # Run  make pull-assets  while online to populate assets/ before going air-gapped.
@@ -376,16 +381,19 @@ load-images: check-env ## Load Docker images into kind node (CLUSTER=<name> to o
 	ECK_VER=$$(cat assets/eck/VERSION 2>/dev/null || echo "$(ECK_VERSION)"); \
 	FAILED=""; \
 	for img in docker.elastic.co/eck/eck-operator:$$ECK_VER $(EPR_IMAGE) $(ELASTIC_IMAGES); do \
+	  [ -z "$$img" ] && continue; \
 	  echo "  --> $$img"; \
-	  kind load docker-image "$$img" --name "$$CLUSTER_NAME_RESOLVED" 2>&1 \
-	    | grep -v '^Image:' || FAILED="$$FAILED\n    ✗ $$img"; \
+	  out=$$(kind load docker-image "$$img" --name "$$CLUSTER_NAME_RESOLVED" 2>&1); rc=$$?; \
+	  echo "$$out" | grep -v '^Image:' || true; \
+	  [ $$rc -eq 0 ] || FAILED="$$FAILED\n    ✗ $$img"; \
 	done; \
 	if [ -f assets/ingress-nginx-images.txt ]; then \
 	  while IFS= read -r img; do \
 	    [ -z "$$img" ] && continue; \
 	    echo "  --> $$img"; \
-	    kind load docker-image "$$img" --name "$$CLUSTER_NAME_RESOLVED" 2>&1 \
-	      | grep -v '^Image:' || FAILED="$$FAILED\n    ✗ $$img"; \
+	    out=$$(kind load docker-image "$$img" --name "$$CLUSTER_NAME_RESOLVED" 2>&1); rc=$$?; \
+	    echo "$$out" | grep -v '^Image:' || true; \
+	    [ $$rc -eq 0 ] || FAILED="$$FAILED\n    ✗ $$img"; \
 	  done < assets/ingress-nginx-images.txt; \
 	fi; \
 	if [ -n "$$FAILED" ]; then \
@@ -578,8 +586,120 @@ clean-license: ## Remove all ECK license secrets (reverts to basic)
 	@kubectl delete secret eck-trial-license -n $(ECK_NAMESPACE) --ignore-not-found=true
 	@kubectl delete secret eck-license       -n $(ECK_NAMESPACE) --ignore-not-found=true
 
+# ── LM Studio (host-side LLM runtime) ────────────────────────────────────────
+# The Apple Silicon GPU is not visible to Docker Desktop's Kubernetes VM, so we
+# keep the model on the host (Metal/MLX) and the Kibana connector reaches it
+# through host.docker.internal.  These targets bring LM Studio's lifecycle into
+# the same  make deploy / make clean-all  flow as everything else.
+#
+# Single source of truth for the model name: LLM_CONNECTOR_MODEL in .env is
+# passed to  lms load  AND substituted into the Kibana connector's
+# defaultModel (manifests/kibana.yaml), so changing it in one place updates
+# both sides.
+
+check-lms: ## Check the lms CLI is installed; install LM Studio + bootstrap if missing
+	@if command -v lms >/dev/null 2>&1; then \
+	  echo "==> lms CLI found: $$(command -v lms)"; \
+	elif [ -x "$$HOME/.lmstudio/bin/lms" ]; then \
+	  echo "==> lms binary present at $$HOME/.lmstudio/bin/lms but not on PATH — bootstrapping…"; \
+	  "$$HOME/.lmstudio/bin/lms" bootstrap; \
+	  echo "==> lms bootstrapped. Open a new shell (or add ~/.lmstudio/bin to PATH) to use 'lms' directly."; \
+	else \
+	  if ! command -v brew >/dev/null 2>&1; then \
+	    echo "ERROR: lms CLI not found and Homebrew is not installed."; \
+	    echo "       Install LM Studio manually from https://lmstudio.ai then run:"; \
+	    echo "         ~/.lmstudio/bin/lms bootstrap"; \
+	    exit 1; \
+	  fi; \
+	  if ! brew list --cask lm-studio >/dev/null 2>&1; then \
+	    echo "==> LM Studio cask not installed — running  brew install --cask lm-studio…"; \
+	    brew install --cask lm-studio; \
+	  fi; \
+	  if [ -x "$$HOME/.lmstudio/bin/lms" ]; then \
+	    echo "==> Bootstrapping lms CLI…"; \
+	    "$$HOME/.lmstudio/bin/lms" bootstrap; \
+	    echo "==> lms installed.  Open a new shell (or add ~/.lmstudio/bin to PATH) to use 'lms' directly."; \
+	  else \
+	    echo "ERROR: LM Studio installed but $$HOME/.lmstudio/bin/lms not present."; \
+	    echo "       Open the LM Studio app once to complete first-run setup, then re-run  make check-lms."; \
+	    exit 1; \
+	  fi; \
+	fi
+
+start-llm: check-env ## Start LM Studio server on $(LM_STUDIO_PORT) and load $(LLM_CONNECTOR_MODEL)
+	@if [ -z "$(LLM_CONNECTOR_MODEL)" ]; then \
+	  echo "==> LLM disabled (LLM_CONNECTOR_MODEL not set in .env) — skipping LM Studio start."; \
+	  exit 0; \
+	fi
+	@test -n "$(LM_STUDIO_PORT)" || \
+	  (echo "ERROR: LM_STUDIO_PORT is not set in .env"; exit 1)
+	@$(MAKE) -s check-lms
+	@echo "==> Starting LM Studio server on port $(LM_STUDIO_PORT)…"
+	@if "$(LMS_BIN)" server status 2>&1 | grep -qiE 'running|on port'; then \
+	  echo "    server already running — leaving it."; \
+	else \
+	  "$(LMS_BIN)" server start --port $(LM_STUDIO_PORT) 2>&1 | sed 's/^/    /' \
+	    || "$(LMS_BIN)" server start                     2>&1 | sed 's/^/    /' \
+	    || true; \
+	fi
+	@echo "==> Loading model: $(LLM_CONNECTOR_MODEL)"
+	@if ! "$(LMS_BIN)" ls 2>/dev/null | grep -qF "$(LLM_CONNECTOR_MODEL)"; then \
+	  echo "ERROR: model '$(LLM_CONNECTOR_MODEL)' is not in the local LM Studio catalogue."; \
+	  echo "       Available local models:"; \
+	  "$(LMS_BIN)" ls 2>/dev/null | sed 's/^/         /' || true; \
+	  echo "       Download with:  lms get $(LLM_CONNECTOR_MODEL)"; \
+	  exit 1; \
+	fi
+	@"$(LMS_BIN)" load "$(LLM_CONNECTOR_MODEL)" || true
+	@$(MAKE) -s check-llm
+
+stop-llm: ## Unload models and stop the LM Studio server
+	@if [ -x "$(LMS_BIN)" ] || command -v "$(LMS_BIN)" >/dev/null 2>&1; then \
+	  echo "==> Unloading models and stopping LM Studio server…"; \
+	  "$(LMS_BIN)" unload --all >/dev/null 2>&1 || true; \
+	  "$(LMS_BIN)" server stop  >/dev/null 2>&1 || true; \
+	  echo "==> LM Studio server stopped."; \
+	else \
+	  echo "==> lms CLI not present — nothing to stop."; \
+	fi
+
+check-llm: check-env ## Probe the LM Studio endpoint and confirm $(LLM_CONNECTOR_MODEL) is loaded
+	@if [ -z "$(LLM_CONNECTOR_MODEL)" ]; then \
+	  echo "==> LLM disabled (LLM_CONNECTOR_MODEL not set in .env) — skipping check."; \
+	  exit 0; \
+	fi
+	@URL="http://127.0.0.1:$(LM_STUDIO_PORT)/v1/models"; \
+	KEY="$${LLM_CONNECTOR_API_KEY:-lm-studio}"; \
+	echo "==> Probing $${URL}"; \
+	RESP=""; \
+	for i in 1 2 3 4 5; do \
+	  RESP=$$(curl -fsS --max-time 5 -H "Authorization: Bearer $${KEY}" "$${URL}" 2>/dev/null) && break; \
+	  echo "    not ready — retry $$i/5 in 2s"; \
+	  sleep 2; \
+	  RESP=""; \
+	done; \
+	if [ -z "$${RESP}" ]; then \
+	  CODE=$$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $${KEY}" "$${URL}" 2>/dev/null); \
+	  echo "ERROR: LLM endpoint probe failed at $${URL} (HTTP $${CODE:-no-response})"; \
+	  if [ "$${CODE}" = "401" ] || [ "$${CODE}" = "403" ]; then \
+	    echo "       The server is up but rejected the API key. Check LLM_CONNECTOR_API_KEY in .env"; \
+	    echo "       matches the key configured in LM Studio (Developer → API Server)."; \
+	  else \
+	    echo "       Check  $(LMS_BIN) server status  and  $(LMS_BIN) ps."; \
+	  fi; \
+	  exit 1; \
+	fi; \
+	if echo "$${RESP}" | grep -qF "\"$(LLM_CONNECTOR_MODEL)\""; then \
+	  echo "==> OK: $(LLM_CONNECTOR_MODEL) is loaded at $${URL}"; \
+	else \
+	  echo "WARN: endpoint up, but model '$(LLM_CONNECTOR_MODEL)' is not currently loaded."; \
+	  echo "      Response from $${URL}:"; \
+	  echo "$${RESP}" | sed 's/^/        /'; \
+	  exit 1; \
+	fi
+
 # ── Deploy ───────────────────────────────────────────────────────────────────
-deploy: check-env check-tools install-eck apply-license install-ingress ## Deploy the full Elastic stack using values from .env
+deploy: check-env check-tools install-eck apply-license install-ingress start-llm ## Deploy the full Elastic stack using values from .env
 	@i=0; while kubectl get namespace $(ELASTIC_NS) \
 	    -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Terminating; do \
 	  i=$$((i+1)); \
@@ -699,5 +819,5 @@ clean-eck: ## Remove the ECK operator and its CRDs
 	@echo "==> ECK removed."
 
 
-clean-all: clean-elastic clean-ingress clean-eck ## Remove all Elastic assets (stack, ingress, ECK) — leaves Docker and LM Studio running
+clean-all: clean-elastic clean-ingress clean-eck stop-llm ## Remove all Elastic assets (stack, ingress, ECK) and stop the LM Studio server
 	@echo "==> Full cleanup complete."

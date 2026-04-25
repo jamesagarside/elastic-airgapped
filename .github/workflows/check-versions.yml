@@ -113,10 +113,19 @@ jobs:
           OLD_VERSION: ${{ needs.check.outputs.current_elastic_version }}
           NEW_VERSION: ${{ needs.check.outputs.new_elastic_version }}
         run: |
-          echo "Elastic Stack: $OLD_VERSION -> $NEW_VERSION"
-          sed -i "s/^ELASTIC_VERSION=${OLD_VERSION}/ELASTIC_VERSION=${NEW_VERSION}/" .env.example
-          # README badge:  Elastic-<version>-005571
-          sed -i "s/Elastic-${OLD_VERSION}-005571/Elastic-${NEW_VERSION}-005571/g" README.md
+          echo "Elastic Stack: ${OLD_VERSION:-unset} -> $NEW_VERSION"
+
+          # .env.example: replace the whole ELASTIC_VERSION line so the update
+          # is independent of the previously detected value.
+          sed -i -E "s/^ELASTIC_VERSION=.*/ELASTIC_VERSION=${NEW_VERSION}/" .env.example
+          if ! grep -qE "^ELASTIC_VERSION=${NEW_VERSION}\$" .env.example; then
+            echo "ERROR: failed to update ELASTIC_VERSION in .env.example"
+            exit 1
+          fi
+
+          # README badge: Elastic-<version>-005571
+          sed -i -E "s/Elastic-[0-9]+\.[0-9]+\.[0-9]+-005571/Elastic-${NEW_VERSION}-005571/g" README.md
+
           git diff --stat
 
       - name: Update ECK version in README
@@ -126,9 +135,7 @@ jobs:
           NEW_VERSION: ${{ needs.check.outputs.new_eck_version }}
         run: |
           echo "ECK: ${OLD_VERSION:-unset} -> $NEW_VERSION"
-          if [[ -n "$OLD_VERSION" ]]; then
-            sed -i "s/ECK-${OLD_VERSION}-005571/ECK-${NEW_VERSION}-005571/g" README.md
-          fi
+          sed -i -E "s/ECK-[0-9]+\.[0-9]+\.[0-9]+-005571/ECK-${NEW_VERSION}-005571/g" README.md
           git diff --stat
 
       - name: Create pull request

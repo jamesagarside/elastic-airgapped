@@ -33,18 +33,22 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          # EPR serves its catalogue at "/"; older image tags do not expose
+          # a dedicated /health endpoint, so probe the catalogue root.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /
               port: http
             periodSeconds: 10
-            failureThreshold: 6
+            failureThreshold: 12
+            initialDelaySeconds: 10
           livenessProbe:
             httpGet:
-              path: /health
+              path: /
               port: http
             periodSeconds: 30
-            failureThreshold: 3
+            failureThreshold: 5
+            initialDelaySeconds: 60
           resources:
             requests:
               memory: ${EPR_MEM}
