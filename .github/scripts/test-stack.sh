@@ -94,13 +94,14 @@ test_epr() {
     log_warn "package-registry service not present (skipped)"
     return
   fi
-  # Run a small client pod against the service.
+  # EPR's `distribution:lite` image does not expose /health; the catalogue
+  # is served at "/", so probe that.
   if kubectl -n "$NS" run epr-probe --rm -i --restart=Never \
        --image=curlimages/curl:8.10.1 --quiet -- \
-       -sSf "http://package-registry:8080/health" >/dev/null; then
-    log_ok "EPR /health returns 2xx"
+       -sSf "http://package-registry:8080/" >/dev/null; then
+    log_ok "EPR catalogue returns 2xx"
   else
-    log_fail "EPR /health did not respond"
+    log_fail "EPR did not respond"
   fi
 }
 
