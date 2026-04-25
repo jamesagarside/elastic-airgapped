@@ -53,7 +53,7 @@ This project does all of that for you with a single `make pull-all` while you ar
 - **One-command cleanup**: `make clean-all` removes the stack, the operator, the ingress controller, and leaves your Docker daemon otherwise untouched.
 - **Portable image cache**: `make save-images` writes every required container image to `assets/images/*.tar` so the asset bundle can be transported to another machine.
 - **Ingress + TLS**: ingress-nginx with `*.localhost` hostnames that resolve without touching `/etc/hosts` on Chrome and Firefox. Safari gets a `make add-hosts` helper.
-- **Optional local LLM**: a pre-wired Kibana AI Connector targets LM Studio running on your host, so the Kibana AI Assistant works with a private model and no internet.
+- **Optional local LLM**: LM Studio is started, loaded, and stopped by `make deploy` / `make clean-all`, and a pre-wired Kibana AI Connector targets it on the host — so the Kibana AI Assistant works with a private model and no internet, with the same lifecycle commands as the rest of the stack.
 
 ---
 
@@ -152,8 +152,9 @@ make deploy
 2. Install the ECK operator from `assets/eck/`.
 3. Apply the license you selected in `.env` (Trial, Basic, or Enterprise).
 4. Install ingress-nginx from the local Helm chart.
-5. Apply every manifest under `manifests/`, substituting `.env` values via `envsubst`.
-6. Wait for Elasticsearch to report `health: green`.
+5. Start LM Studio on the host and load `LLM_CONNECTOR_MODEL` (skipped if that variable is empty in `.env`; LM Studio is installed via Homebrew if not already present).
+6. Apply every manifest under `manifests/`, substituting `.env` values via `envsubst`.
+7. Wait for Elasticsearch to report `health: green`.
 
 ---
 
@@ -222,9 +223,15 @@ make pull-all               # assets + images + GeoIP + ML models + EPR
 make save-images            # export images to assets/images/*.tar (for portability)
 
 # Offline
-make deploy                 # full deploy (ECK -> license -> ingress -> stack)
+make deploy                 # full deploy (ECK -> license -> ingress -> LLM -> stack)
 make apply-license          # re-apply license per .env
 make add-hosts              # /etc/hosts entries for Safari
+
+# Local LLM (optional, host-side via LM Studio)
+make check-lms              # ensure the lms CLI is installed (installs LM Studio via Homebrew if missing)
+make start-llm              # start LM Studio server and load $LLM_CONNECTOR_MODEL
+make check-llm              # probe the endpoint and confirm the model is loaded
+make stop-llm               # unload models and stop the LM Studio server
 
 # Inspect
 make show-config            # pretty-print resolved .env
@@ -237,7 +244,7 @@ make check-license          # current license state
 make clean-elastic          # remove stack (keeps ECK operator)
 make clean-ingress          # remove ingress-nginx
 make clean-eck              # remove ECK operator + CRDs
-make clean-all              # all of the above
+make clean-all              # all of the above + stop LM Studio
 ```
 
 ---
@@ -277,7 +284,7 @@ elastic-airgapped/
 - **Package Registry**: a local `distribution:lite` EPR is deployed inside the cluster; Kibana is configured with `xpack.fleet.registryUrl` pointing at the in-cluster Service, so Fleet integrations install without reaching `epr.elastic.co`.
 - **GeoIP**: `ingest.geoip.downloader.enabled: false` is set in the Elasticsearch config, and the `make pull-geoip` target downloads GeoLite2 databases into `assets/geoip/` for optional upload via the GeoIP processor API.
 - **ML models**: ELSER model artefacts are cached in `assets/ml-models/` and can be uploaded to the ML node once the cluster is up.
-- **LLM (optional)**: a Kibana AI Connector is wired to an OpenAI-compatible endpoint on the host (LM Studio by default) via `host.docker.internal`. Fully offline and private.
+- **LLM (optional)**: a Kibana AI Connector is wired to an OpenAI-compatible endpoint on the host (LM Studio by default) via `host.docker.internal`. Apple Silicon's GPU is not visible to Docker Desktop's Kubernetes VM, so the model stays on the host (Metal/MLX) while `make deploy` / `make clean-all` drive its lifecycle through the `lms` CLI — keeping the cluster reproducible and the inference fast. Fully offline and private.
 
 ---
 
@@ -376,7 +383,14 @@ Bump `ELASTIC_VERSION` in `.env`, run `make pull-all` online (to cache the new i
 
 ### How does the local LLM integration work?
 
-Kibana is templated with an AI Connector pointing at `host.docker.internal:<LM_STUDIO_PORT>/v1` — an OpenAI-compatible endpoint. Run LM Studio on the host with any compatible model loaded. The Kibana AI Assistant then uses that local endpoint without ever leaving your machine.
+Kibana is templated with an AI Connector pointing at `host.docker.internal:<LM_STUDIO_PORT>/v1` — an OpenAI-compatible endpoint. The model itself runs on the host through LM Studio so it can use Metal/MLX (Docker Desktop's Kubernetes VM cannot see the Apple Silicon GPU), and the lab manages its lifecycle through the same Makefile as the rest of the stack:
+
+- `make deploy` runs `make start-llm`, which calls `make check-lms` to install LM Studio via Homebrew if needed (`brew install --cask lm-studio` + `lms bootstrap`), starts the `lms` server on `LM_STUDIO_PORT`, loads `LLM_CONNECTOR_MODEL`, and probes the endpoint with `make check-llm`.
+- `make clean-all` runs `make stop-llm`, which unloads models and stops the `lms` server.
+- `LLM_CONNECTOR_MODEL` in `.env` is the **single source of truth** for the model name: it is passed to `lms load` and substituted into the Kibana connector's `defaultModel`, so changing it in one place updates both sides.
+- Set `LLM_CONNECTOR_MODEL=` (empty) in `.env` to skip the LLM entirely — `make deploy` becomes a no-op for the LM Studio steps.
+
+The Kibana AI Assistant then uses that local endpoint without ever leaving your machine.
 
 ### Why ECK instead of Docker Compose?
 
