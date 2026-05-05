@@ -4,7 +4,7 @@
 [![Latest release](https://img.shields.io/github/v/release/jamesagarside/elastic-airgapped)](https://github.com/jamesagarside/elastic-airgapped/releases/latest)
 [![GitHub stars](https://img.shields.io/github/stars/jamesagarside/elastic-airgapped?style=social)](https://github.com/jamesagarside/elastic-airgapped/stargazers)
 [![Last commit](https://img.shields.io/github/last-commit/jamesagarside/elastic-airgapped)](https://github.com/jamesagarside/elastic-airgapped/commits)
-[![Elastic Stack](https://img.shields.io/badge/Elastic-9.3.1-005571?logo=elastic&logoColor=white)](https://www.elastic.co/)
+[![Elastic Stack](https://img.shields.io/badge/Elastic-9.3.4-005571?logo=elastic&logoColor=white)](https://www.elastic.co/)
 [![ECK](https://img.shields.io/badge/ECK-Cloud_on_Kubernetes-005571?logo=elastic&logoColor=white)](https://www.elastic.co/guide/en/cloud-on-k8s/current/index.html)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
 [![Docker Desktop](https://img.shields.io/badge/Docker%20Desktop-2496ED?logo=docker&logoColor=white)](https://www.docker.com/products/docker-desktop/)
