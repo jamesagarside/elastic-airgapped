@@ -94,7 +94,7 @@ jobs:
           echo "Has updates: $HAS_UPDATES"
 
   update-and-release:
-    name: Update versions and create release
+    name: Update versions and open PR
     needs: check
     if: needs.check.outputs.has_updates == 'true'
     runs-on: ubuntu-latest
@@ -135,9 +135,8 @@ jobs:
           sed -i -E "s/ECK-[0-9]+\.[0-9]+\.[0-9]+-005571/ECK-${NEW_VERSION}-005571/g" README.md
           git diff --stat
 
-      - name: Commit and push to main
+      - name: Open PR to main
         if: github.event.inputs.dry_run != 'true'
-        id: commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_ELASTIC: ${{ needs.check.outputs.new_elastic_version }}
@@ -154,47 +153,32 @@ jobs:
           fi
           TITLE="chore: update $(IFS=', '; echo "${TITLE_PARTS[*]}")"
 
+          BRANCH="chore/update-versions-$(date +%Y%m%d)"
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          git checkout -b "$BRANCH"
           git add .env.example README.md
-          if git commit -m "$TITLE"; then
-            git push origin HEAD:main
-            echo "committed=true" >> "$GITHUB_OUTPUT"
-          else
+          if ! git commit -m "$TITLE"; then
             echo "No changes to commit"
-            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          git push origin "$BRANCH"
 
-      - name: Create GitHub release for new Elastic Stack version
-        if: >
-          needs.check.outputs.new_elastic_version != '' &&
-          github.event.inputs.dry_run != 'true' &&
-          steps.commit.outputs.committed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEW_VERSION: ${{ needs.check.outputs.new_elastic_version }}
-          OLD_VERSION: ${{ needs.check.outputs.current_elastic_version }}
-          NEW_ECK: ${{ needs.check.outputs.new_eck_version }}
-        run: |
-          MINOR="${NEW_VERSION%.*}"
-          RELEASE_NOTES="## Elastic Stack ${NEW_VERSION}
-
-Updated from Elastic Stack \`${OLD_VERSION}\` to \`${NEW_VERSION}\`.
-
-See the [Elastic ${MINOR} release notes](https://www.elastic.co/guide/en/elasticsearch/reference/${MINOR}/release-notes-${NEW_VERSION}.html) for full details."
-
+          BODY_PARTS=()
+          if [[ -n "$NEW_ELASTIC" ]]; then
+            BODY_PARTS+=("- Elastic Stack \`${OLD_ELASTIC}\` → \`${NEW_ELASTIC}\`")
+          fi
           if [[ -n "$NEW_ECK" ]]; then
-            RELEASE_NOTES="${RELEASE_NOTES}
-
-### ECK also updated to ${NEW_ECK}
-
-See the [ECK ${NEW_ECK} release notes](https://www.elastic.co/guide/en/cloud-on-k8s/current/release-notes.html) for full details."
+            BODY_PARTS+=("- ECK \`${OLD_ECK}\` → \`${NEW_ECK}\`")
           fi
+          BODY="$(printf '%s\n' "${BODY_PARTS[@]}")"
 
-          gh release create "v${NEW_VERSION}" \
-            --title "Elastic Stack ${NEW_VERSION}" \
-            --notes "$RELEASE_NOTES" \
-            --target main \
-            && echo "Release v${NEW_VERSION} created" \
-            || echo "Release v${NEW_VERSION} may already exist, skipping"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "$TITLE" \
+            --body "$BODY"
+
+          gh pr merge "$BRANCH" --auto --squash
