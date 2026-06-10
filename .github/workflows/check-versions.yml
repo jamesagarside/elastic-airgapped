@@ -166,6 +166,12 @@ jobs:
           fi
           git push origin "$BRANCH"
 
+          # Skip if a PR already exists for this branch (e.g. workflow re-run on the same day)
+          if gh pr list --base main --head "$BRANCH" --json number --jq '.[].number' | grep -q .; then
+            echo "PR already exists for branch $BRANCH, skipping"
+            exit 0
+          fi
+
           BODY_PARTS=()
           if [[ -n "$NEW_ELASTIC" ]]; then
             BODY_PARTS+=("- Elastic Stack \`${OLD_ELASTIC}\` → \`${NEW_ELASTIC}\`")
