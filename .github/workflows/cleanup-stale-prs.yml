@@ -1,0 +1,43 @@
+name: Close stale version-bump PRs
+
+on:
+  schedule:
+    # Every Monday at 07:00 UTC (after the daily version check at 06:00)
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+    inputs:
+      stale_days:
+        description: 'Close PRs open for more than this many days'
+        required: false
+        default: '7'
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  cleanup:
+    name: Close stale chore/update-versions-* PRs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Close stale version-bump PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          STALE_DAYS: ${{ github.event.inputs.stale_days || '7' }}
+        run: |
+          CUTOFF=$(date -d "-${STALE_DAYS} days" --iso-8601=seconds)
+          echo "Closing chore/update-versions-* PRs open since before $CUTOFF"
+
+          gh pr list \
+            --base main \
+            --state open \
+            --json number,headRefName,createdAt,title \
+            --jq ".[] | select(.headRefName | startswith(\"chore/update-versions-\")) | select(.createdAt < \"$CUTOFF\") | [.number, .headRefName, .title] | @tsv" \
+          | while IFS=$'\t' read -r PR_NUMBER BRANCH TITLE; do
+            echo "Closing stale PR #$PR_NUMBER ($BRANCH): $TITLE"
+            gh pr close "$PR_NUMBER" \
+              --comment "Closing this version-bump PR — it has been open for more than ${STALE_DAYS} days without passing checks. A fresh PR will be opened automatically by the next scheduled version check if the update is still needed." \
+              --delete-branch
+          done
