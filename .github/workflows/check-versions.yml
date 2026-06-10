@@ -7,14 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry run (skip PR creation)'
+        description: 'Dry run (skip commit and release)'
         required: false
         default: false
         type: boolean
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   check:
@@ -67,8 +66,6 @@ jobs:
         id: eck
         run: |
           # ECK version is tracked in the README badge: "ECK-<version>-..."
-          # If not badged, read from assets/eck/VERSION when it exists (dev
-          # checkouts); for CI we only care about the README reference.
           CURRENT=$(grep -oP 'ECK-\K[0-9]+\.[0-9]+\.[0-9]+' README.md | head -1 || true)
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "Current ECK (README reference): ${CURRENT:-unset}"
@@ -96,8 +93,8 @@ jobs:
           echo "has_updates=$HAS_UPDATES" >> "$GITHUB_OUTPUT"
           echo "Has updates: $HAS_UPDATES"
 
-  update-and-pr:
-    name: Update versions and open PR
+  update-and-release:
+    name: Update versions and create release
     needs: check
     if: needs.check.outputs.has_updates == 'true'
     runs-on: ubuntu-latest
@@ -138,8 +135,9 @@ jobs:
           sed -i -E "s/ECK-[0-9]+\.[0-9]+\.[0-9]+-005571/ECK-${NEW_VERSION}-005571/g" README.md
           git diff --stat
 
-      - name: Create pull request
+      - name: Commit and push to main
         if: github.event.inputs.dry_run != 'true'
+        id: commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_ELASTIC: ${{ needs.check.outputs.new_elastic_version }}
@@ -147,33 +145,56 @@ jobs:
           NEW_ECK: ${{ needs.check.outputs.new_eck_version }}
           OLD_ECK: ${{ needs.check.outputs.current_eck_version }}
         run: |
-          BRANCH="chore/version-update"
           TITLE_PARTS=()
-          BODY_PARTS=("## Version updates" "")
-
           if [[ -n "$NEW_ELASTIC" ]]; then
             TITLE_PARTS+=("Elastic Stack ${NEW_ELASTIC}")
-            BODY_PARTS+=("- Elastic Stack: \`${OLD_ELASTIC}\` -> \`${NEW_ELASTIC}\`")
           fi
           if [[ -n "$NEW_ECK" ]]; then
             TITLE_PARTS+=("ECK ${NEW_ECK}")
-            BODY_PARTS+=("- ECK: \`${OLD_ECK:-unset}\` -> \`${NEW_ECK}\`")
           fi
-
           TITLE="chore: update $(IFS=', '; echo "${TITLE_PARTS[*]}")"
-          BODY=$(printf '%s\n' "${BODY_PARTS[@]}")
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git checkout -B "$BRANCH"
-          git add -A
-          git commit -m "$TITLE" || { echo "No changes to commit"; exit 0; }
-          git push -u origin "$BRANCH" --force
-
-          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
-          if [[ -n "$EXISTING" ]]; then
-            echo "Existing PR #${EXISTING} updated"
+          git add .env.example README.md
+          if git commit -m "$TITLE"; then
+            git push origin HEAD:main
+            echo "committed=true" >> "$GITHUB_OUTPUT"
           else
-            gh pr create --title "$TITLE" --body "$BODY"
+            echo "No changes to commit"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Create GitHub release for new Elastic Stack version
+        if: >
+          needs.check.outputs.new_elastic_version != '' &&
+          github.event.inputs.dry_run != 'true' &&
+          steps.commit.outputs.committed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_VERSION: ${{ needs.check.outputs.new_elastic_version }}
+          OLD_VERSION: ${{ needs.check.outputs.current_elastic_version }}
+          NEW_ECK: ${{ needs.check.outputs.new_eck_version }}
+        run: |
+          MINOR="${NEW_VERSION%.*}"
+          RELEASE_NOTES="## Elastic Stack ${NEW_VERSION}
+
+Updated from Elastic Stack \`${OLD_VERSION}\` to \`${NEW_VERSION}\`.
+
+See the [Elastic ${MINOR} release notes](https://www.elastic.co/guide/en/elasticsearch/reference/${MINOR}/release-notes-${NEW_VERSION}.html) for full details."
+
+          if [[ -n "$NEW_ECK" ]]; then
+            RELEASE_NOTES="${RELEASE_NOTES}
+
+### ECK also updated to ${NEW_ECK}
+
+See the [ECK ${NEW_ECK} release notes](https://www.elastic.co/guide/en/cloud-on-k8s/current/release-notes.html) for full details."
+          fi
+
+          gh release create "v${NEW_VERSION}" \
+            --title "Elastic Stack ${NEW_VERSION}" \
+            --notes "$RELEASE_NOTES" \
+            --target main \
+            && echo "Release v${NEW_VERSION} created" \
+            || echo "Release v${NEW_VERSION} may already exist, skipping"
